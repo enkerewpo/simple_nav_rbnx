@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+rbnx-build/
+proto_gen/
+*.egg-info

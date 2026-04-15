@@ -1,0 +1,41 @@
+# simple_nav_rbnx — safety-first Robonix navigation provider (not Nav2).
+manifestVersion: 1
+
+build:
+  script: scripts/build.sh
+
+package:
+  id: com.robonix.pkg.simple_nav
+  name: simple_nav_rbnx
+  version: 0.1.0
+  vendor: robonix
+  description: >-
+    Minimal navigation provider that serves `robonix/srv/navigation/*` without
+    Nav2. A* global plan + PID waypoint follower + mandatory costmap lookahead
+    collision check on every cmd_vel publish.
+  license: MulanPSL-2.0
+
+nodes:
+  - id: com.robonix.nav.simple
+    type: shell
+    start: |
+      set -e
+      PKG="$(pwd)"
+      source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+      if [[ -f "${HOME}/wheatfox/packages/mid360_drv/install/setup.bash" ]]; then
+        source "${HOME}/wheatfox/packages/mid360_drv/install/setup.bash"
+      fi
+      export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      export PYTHONPATH="$PKG/src:$PKG/proto_gen:${PYTHONPATH:-}"
+      exec python3 -m simple_nav_rbnx.atlas_bridge --config "$PKG/config/nav_default.yaml"
+
+interfaces:
+  provides:
+    - id: robonix/srv/navigation/navigate
+    - id: robonix/srv/navigation/status
+    - id: robonix/srv/navigation/cancel
+  consumes:
+    - id: robonix/srv/common/map/occupancy_grid
+    - id: robonix/srv/common/map/scan_2d
+    - id: robonix/prm/base/odom
+    - id: robonix/prm/base/twist_in

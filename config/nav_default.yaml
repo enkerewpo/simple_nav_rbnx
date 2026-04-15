@@ -1,0 +1,34 @@
+# simple_nav_rbnx default parameters.
+# Applied at startup; Atlas-discovered topics override nothing here.
+
+# Robot physical
+robot_radius: 0.25           # m, circumscribed footprint for inflation
+
+# Control loop
+follower_hz: 20              # Hz, cmd_vel publish rate
+max_linear: 0.5              # m/s, hard cap
+max_angular: 1.0             # rad/s, hard cap
+pid_linear: [0.8, 0.0, 0.1]  # kp, ki, kd
+pid_angular: [1.5, 0.0, 0.2]
+
+# Goal convergence
+goal_tolerance: 0.3          # m, xy distance
+goal_yaw_tolerance: 0.2      # rad, heading (only used if goal has a yaw)
+timeout: 120                 # s per goal
+
+# Safety lookahead
+lookahead_dt: 0.4            # s, how far ahead to predict pose
+lookahead_ticks: 5           # discrete poses along lookahead trajectory
+safety_inflate_extra: 0.1    # m, additional margin beyond robot_radius
+scan_safety_enabled: true    # fuse live /scan with static costmap
+
+# Planner
+planner_diagonal: true       # 8-connected with diagonal cost √2
+planner_max_iters: 500000    # abort if exceeded
+
+# Topics (discovered via Atlas; fallback defaults shown)
+topics:
+  cmd_vel: /cmd_vel
+  odom_fallback: /odom
+  occupancy_grid_fallback: /robonix/map/occupancy_grid
+  scan_2d_fallback: /robonix/map/scan_2d
