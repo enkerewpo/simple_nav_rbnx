@@ -73,10 +73,17 @@ CONSUMED = {
     "robonix/prm/base/twist_in": "/cmd_vel",
 }
 
+# Provided interfaces. Each is served via two transports:
+#   - grpc  : programmatic robot-to-robot RPC (TODO: bind generated stubs;
+#             today the bridge advertises the port but doesn't run a real grpc
+#             server — Pilot reaches navigation via the MCP tool path below).
+#   - mcp   : VLM-callable tool surface, served by FastMCP/uvicorn from
+#             `mcp_server.py`. This is the path Pilot's executor actually
+#             dispatches over today (see rust/.../dispatch/mcp.rs).
 PROVIDED_INTERFACES = [
-    ("navigate", "robonix/srv/navigation/navigate", ["grpc"]),
-    ("status", "robonix/srv/navigation/status", ["grpc"]),
-    ("cancel", "robonix/srv/navigation/cancel", ["grpc"]),
+    ("navigate", "robonix/srv/navigation/navigate"),
+    ("status", "robonix/srv/navigation/status"),
+    ("cancel", "robonix/srv/navigation/cancel"),
 ]
 
 
@@ -107,70 +114,7 @@ def _discover_topic(stub: pb_grpc.RobonixRuntimeStub, contract_id: str, fallback
         return fallback
 
 
-# ── gRPC service implementations ─────────────────────────────────────────────
-#
-# We don't have cross-imports of the navigation_navigate_pb2 shapes here yet
-# (those come from robonix_proto after codegen). The bridge keeps the wire
-# contract simple by accepting `std_msgs/String` carrying JSON, matching what
-# vlm_service / tiago_bridge already do when a contract TOML hasn't been
-# compiled into a concrete servicer class.  Pilot's tool dispatcher just
-# forwards the tool-call JSON; we parse it here and invoke the NavNode.
-
-class NavigationService:
-    """Not a real proto-generated servicer — a thin JSON handler Pilot reaches
-    over a generic stream method.  The concrete .proto binding is TODO:
-    once rust/contracts/srv/navigation_*.v1.toml has been compiled, replace
-    this with the stub-generated class."""
-
-    def __init__(self, nav: NavNode) -> None:
-        self.nav = nav
-
-    def handle_navigate(self, payload: dict) -> dict:
-        # Expected JSON: {"x": f, "y": f, "yaw"?: f, "tolerance"?: f, "timeout"?: f}
-        try:
-            from geometry_msgs.msg import PoseStamped
-            import math as _math
-            ps = PoseStamped()
-            ps.header.frame_id = "map"
-            ps.pose.position.x = float(payload["x"])
-            ps.pose.position.y = float(payload["y"])
-            yaw = payload.get("yaw")
-            if yaw is not None:
-                yaw = float(yaw)
-                ps.pose.orientation.z = _math.sin(yaw / 2.0)
-                ps.pose.orientation.w = _math.cos(yaw / 2.0)
-            ok, gid, msg = self.nav.submit_goal(
-                ps,
-                tolerance=payload.get("tolerance"),
-                timeout=payload.get("timeout"),
-            )
-            return {"goal_id": gid, "accepted": ok, "message": msg}
-        except Exception as e:
-            log.exception("[navigate] error")
-            return {"goal_id": "", "accepted": False, "message": f"error: {e}"}
-
-    def handle_status(self, payload: dict) -> dict:
-        gid = str(payload.get("goal_id", ""))
-        gs = self.nav.status(gid)
-        if gs is None:
-            return {"known": False, "status": "", "terminal": False, "message": "unknown goal_id"}
-        return {
-            "known": True,
-            "status": gs.status.value,
-            "terminal": gs.is_terminal(),
-            "distance_remaining_m": gs.distance_remaining_m,
-            "elapsed_s": gs.elapsed_s,
-            "current_x": gs.current_x,
-            "current_y": gs.current_y,
-            "current_yaw": gs.current_yaw,
-            "message": gs.message,
-        }
-
-    def handle_cancel(self, payload: dict) -> dict:
-        gid = str(payload.get("goal_id", ""))
-        ok, msg = self.nav.cancel(gid)
-        return {"accepted": ok, "message": msg}
-
+# ── Free-port helper ─────────────────────────────────────────────────────────
 
 def _pick_free_port() -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -189,7 +133,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=int(os.environ.get("NAV_GRPC_PORT", "0")))
     args = ap.parse_args()
 
-    port = args.port or _pick_free_port()
+    grpc_port = args.port or _pick_free_port()
+    mcp_port = int(os.environ.get("NAV_MCP_PORT", "0")) or _pick_free_port()
     channel = grpc.insecure_channel(args.atlas)
     stub = pb_grpc.RobonixRuntimeStub(channel)
 
@@ -216,22 +161,8 @@ def main() -> None:
         scan_2d=resolved.get("robonix/srv/common/map/scan_2d"),
     )
 
-    # 3) Declare provided interfaces
-    for name, contract_id, transports in PROVIDED_INTERFACES:
-        try:
-            stub.DeclareInterface(pb.DeclareInterfaceRequest(
-                node_id=NODE_ID,
-                name=name,
-                supported_transports=transports,
-                metadata_json=json.dumps({"grpc_endpoint": f"localhost:{port}"}),
-                listen_port=port,
-                contract_id=contract_id,
-            ))
-            log.info("[atlas] declared %s on port %d", contract_id, port)
-        except grpc.RpcError as e:
-            log.error("[atlas] DeclareInterface %s failed: %s", contract_id, e)
-
-    # 4) Start ROS node on a background thread
+    # 3) Start ROS node on a background thread (must exist before MCP server is
+    #    built, since each MCP tool closes over `nav.submit_goal/status/cancel`).
     rclpy.init()
     nav = NavNode(topics=topics, config_path=args.config)
 
@@ -243,7 +174,50 @@ def main() -> None:
     )
     ros_thread.start()
 
-    # 5) Heartbeat thread
+    # 4) Build MCP app + start uvicorn in a background thread. Pilot's executor
+    #    dispatches `navigate / get_navigation_status / cancel_navigation` here.
+    from .mcp_server import build_mcp_app, serve as serve_mcp
+    mcp_app, mcp_tools = build_mcp_app(nav)
+    mcp_endpoint = f"http://127.0.0.1:{mcp_port}/mcp"
+
+    def _run_mcp() -> None:
+        try:
+            serve_mcp(mcp_app, host="127.0.0.1", port=mcp_port)
+        except Exception:
+            log.exception("[mcp] server crashed")
+
+    threading.Thread(target=_run_mcp, name="nav-mcp", daemon=True).start()
+    log.info("[mcp] serving %d nav tools at %s", len(mcp_tools), mcp_endpoint)
+
+    # 5) Declare provided interfaces with both transports.
+    tools_by_iface = {t["iface_name"]: t for t in mcp_tools}
+    for iface_name, contract_id in PROVIDED_INTERFACES:
+        meta = {
+            "grpc_endpoint": f"localhost:{grpc_port}",
+            "endpoint": mcp_endpoint,
+        }
+        if iface_name in tools_by_iface:
+            t = tools_by_iface[iface_name]
+            meta["tools"] = [{
+                "name": t["tool_name"],
+                "description": t["description"],
+                "input_schema": t["input_schema"],
+            }]
+        try:
+            stub.DeclareInterface(pb.DeclareInterfaceRequest(
+                node_id=NODE_ID,
+                name=iface_name,
+                supported_transports=["grpc", "mcp"],
+                metadata_json=json.dumps(meta),
+                listen_port=grpc_port,
+                contract_id=contract_id,
+            ))
+            log.info("[atlas] declared %s (grpc:%d, mcp:%s)",
+                     contract_id, grpc_port, mcp_endpoint)
+        except grpc.RpcError as e:
+            log.error("[atlas] DeclareInterface %s failed: %s", contract_id, e)
+
+    # 6) Heartbeat thread
     def _heartbeat() -> None:
         while True:
             try:
@@ -254,7 +228,8 @@ def main() -> None:
 
     threading.Thread(target=_heartbeat, daemon=True).start()
 
-    log.info("simple_nav_rbnx ready: atlas=%s port=%d topics=%r", args.atlas, port, topics)
+    log.info("simple_nav_rbnx ready: atlas=%s grpc=%d mcp=%d topics=%r",
+             args.atlas, grpc_port, mcp_port, topics)
 
     # 6) Graceful shutdown on SIGTERM/SIGINT
     stop_evt = threading.Event()
