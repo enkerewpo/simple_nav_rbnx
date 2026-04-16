@@ -1,0 +1,152 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1.0
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.5
+      Show Arrows: true
+      Show Names: true
+
+    # --- Mapping layer: static occupancy + accumulated cloud ---
+    - Class: rviz_default_plugins/Map
+      Name: OccupancyGrid
+      Enabled: true
+      Topic:
+        Value: /robonix/map/occupancy_grid
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+      Use Timestamp: false
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: AccumulatedMap
+      Enabled: true
+      Topic:
+        Value: /robonix/map/cloud_accumulated
+        Depth: 5
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: FlatColor
+      Color: 200; 200; 200
+      Decay Time: 0
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LiveScan
+      Enabled: true
+      Topic:
+        Value: /fastlio2/body_cloud
+        Depth: 5
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: FlatColor
+      Color: 255; 100; 100
+      Decay Time: 0.15
+
+    # --- SLAM / odometry visualization ---
+    - Class: rviz_default_plugins/Odometry
+      Name: LioOdom
+      Enabled: true
+      Topic:
+        Value: /fastlio2/lio_odom
+        Reliability Policy: Reliable
+      Position Tolerance: 0.05
+      Angle Tolerance: 0.05
+      Keep: 200
+      Shape:
+        Value: Arrow
+        Color: 0; 200; 255
+        Alpha: 1.0
+        Shaft Length: 0.25
+        Shaft Radius: 0.03
+        Head Length: 0.08
+        Head Radius: 0.07
+
+    # --- Navigation layer ---
+    - Class: rviz_default_plugins/Path
+      Name: NavPath
+      Enabled: true
+      Topic:
+        Value: /simple_nav/path
+        Reliability Policy: Reliable
+      Color: 25; 255; 25
+      Alpha: 1.0
+      Line Style: Lines
+      Line Width: 0.05
+      Offset: {X: 0, Y: 0, Z: 0.05}
+      Pose Style: None
+
+    - Class: rviz_default_plugins/Marker
+      Name: GoalMarker
+      Enabled: true
+      Topic:
+        Value: /simple_nav/goal_marker
+        Reliability Policy: Reliable
+
+    - Class: rviz_default_plugins/Marker
+      Name: LookaheadMarker
+      Enabled: true
+      Topic:
+        Value: /simple_nav/lookahead_marker
+        Reliability Policy: Reliable
+
+    # --- Optional: live 2D scan ---
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan2D
+      Enabled: false
+      Topic:
+        Value: /robonix/map/scan_2d
+        Reliability Policy: Reliable
+      Size (m): 0.04
+      Color Transformer: FlatColor
+      Color: 255; 0; 255
+
+  Global Options:
+    Background Color: 40; 40; 45
+    Fixed Frame: lidar
+    Frame Rate: 30
+
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    # 2D Nav Goal tool: click on the map, publishes PoseStamped on /goal_pose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: TopDown
+      Target Frame: <Fixed Frame>
+      Scale: 30
+      X: 0
+      Y: 0
+
+Window Geometry:
+  Width: 1600
+  Height: 900
