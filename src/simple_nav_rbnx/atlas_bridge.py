@@ -84,6 +84,7 @@ PROVIDED_INTERFACES = [
     ("navigate", "robonix/srv/navigation/navigate"),
     ("status", "robonix/srv/navigation/status"),
     ("cancel", "robonix/srv/navigation/cancel"),
+    ("spatial_context", "robonix/srv/perception/spatial_context"),
 ]
 
 

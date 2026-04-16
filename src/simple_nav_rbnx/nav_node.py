@@ -330,3 +330,108 @@ class NavNode(Node):
     def status(self, goal_id: str) -> Optional[GoalState]:
         with self._state_lock:
             return self._goals.get(goal_id)
+
+    # ─── spatial context (for VLM "where am I" perception) ──────────────────
+    def snapshot_spatial_context(self, half_window_m: float = 3.0) -> dict:
+        """Return a compact summary of the robot's local environment.
+
+        Used by the `get_spatial_context` MCP tool. All distances are in metres,
+        all angles in radians (yaw from +x, counter-clockwise). The local
+        occupancy crop is an `int8` 2D list with the standard ROS occupancy
+        encoding: -1 unknown, 0 free, 1..100 occupied (after costmap inflation).
+
+        `half_window_m` controls the half-side of the square crop centered on
+        the robot (default 3 m → 6×6 m window). The crop is empty if no map
+        has been received yet.
+        """
+        with self._state_lock:
+            pose = self._pose
+            costmap = self._costmap
+            info = self._grid_info
+            map_frame = self._map_frame
+
+        out: dict = {
+            "map_frame": map_frame,
+            "pose": None,
+            "map": None,
+            "local_occupancy": None,
+            "distance_to_obstacle_m": None,
+        }
+        if pose is not None:
+            x, y, yaw = pose
+            out["pose"] = {
+                "x": float(x),
+                "y": float(y),
+                "yaw_rad": float(yaw),
+                "yaw_deg": float(math.degrees(yaw)),
+            }
+        if info is not None:
+            out["map"] = {
+                "resolution_m": float(info.resolution),
+                "width_cells": int(info.width),
+                "height_cells": int(info.height),
+                "origin_x_m": float(info.origin_x),
+                "origin_y_m": float(info.origin_y),
+            }
+        if pose is not None and costmap is not None and info is not None:
+            cx, cy, _ = pose
+            half_cells = max(1, int(round(half_window_m / max(info.resolution, 1e-6))))
+            ix = int(round((cx - info.origin_x) / info.resolution))
+            iy = int(round((cy - info.origin_y) / info.resolution))
+            x0 = max(0, ix - half_cells)
+            x1 = min(info.width, ix + half_cells + 1)
+            y0 = max(0, iy - half_cells)
+            y1 = min(info.height, iy + half_cells + 1)
+            crop = costmap[y0:y1, x0:x1].astype(int).tolist()
+            out["local_occupancy"] = {
+                "cells": crop,
+                "world_x_min_m": float(info.origin_x + x0 * info.resolution),
+                "world_y_min_m": float(info.origin_y + y0 * info.resolution),
+                "world_x_max_m": float(info.origin_x + x1 * info.resolution),
+                "world_y_max_m": float(info.origin_y + y1 * info.resolution),
+                "robot_cell_in_crop": [int(ix - x0), int(iy - y0)],
+                "encoding": "ROS occupancy: -1 unknown, 0 free, 1..100 occupied (inflated)",
+            }
+            out["distance_to_obstacle_m"] = self._raycast_distances(
+                ix, iy, costmap, info, max_range_m=half_window_m
+            )
+        return out
+
+    @staticmethod
+    def _raycast_distances(
+        ix: int, iy: int, costmap: np.ndarray, info: GridInfo, max_range_m: float,
+    ) -> dict[str, float]:
+        """Cast 8 grid-aligned rays from (ix,iy); return free-space distance per heading.
+
+        A cell counts as blocked if the inflated occupancy is >= 50 (matches the
+        threshold used by the planner). Returned values are min(hit_distance,
+        max_range_m); rays that exit the grid before hitting obstacles return
+        max_range_m.
+        """
+        directions = {
+            "east":      (1, 0),
+            "north_east":(1, 1),
+            "north":     (0, 1),
+            "north_west":(-1, 1),
+            "west":      (-1, 0),
+            "south_west":(-1, -1),
+            "south":     (0, -1),
+            "south_east":(1, -1),
+        }
+        max_steps = max(1, int(round(max_range_m / max(info.resolution, 1e-6))))
+        h, w = costmap.shape
+        out: dict[str, float] = {}
+        diag = math.sqrt(2.0)
+        for name, (dx, dy) in directions.items():
+            step_dist_cells = diag if (dx != 0 and dy != 0) else 1.0
+            blocked_at_cells: float = max_steps * step_dist_cells
+            for k in range(1, max_steps + 1):
+                cx_ = ix + dx * k
+                cy_ = iy + dy * k
+                if cx_ < 0 or cx_ >= w or cy_ < 0 or cy_ >= h:
+                    break
+                if costmap[cy_, cx_] >= 50:
+                    blocked_at_cells = k * step_dist_cells
+                    break
+            out[name] = float(min(max_range_m, blocked_at_cells * info.resolution))
+        return out

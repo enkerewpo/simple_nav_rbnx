@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 rbnx-build/
 proto_gen/
+robonix_mcp_types/
 *.egg-info

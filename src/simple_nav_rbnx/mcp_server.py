@@ -191,6 +191,45 @@ def build_mcp_app(nav) -> tuple[FastMCP, list[dict]]:
             data=json.dumps({"accepted": bool(ok), "message": message})
         )
 
+    # ── get_spatial_context ──────────────────────────────────────────────────
+    SPATIAL_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "half_window_m": {
+                "type": "number",
+                "description": "Half-side of the local occupancy crop (m). Default 3.0 = 6×6 m window.",
+            },
+        },
+    }
+
+    @mcp_contract(
+        mcp,
+        contract_id="robonix/srv/perception/spatial_context",
+        name="get_spatial_context",
+    )
+    async def _spatial_context(msg: std_msgs_mcp.String) -> std_msgs_mcp.String:
+        """Return the robot's pose + a local occupancy crop + nearest-obstacle distances.
+
+        Use this BEFORE choosing a navigation goal so you can pick a target that
+        is in free space and reachable. Returns JSON with: pose (x, y, yaw_rad,
+        yaw_deg), map metadata, local_occupancy (small int8 grid centered on the
+        robot, with world bounds and the robot's cell index), and
+        distance_to_obstacle_m for the 8 cardinal/diagonal directions.
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except json.JSONDecodeError as e:
+            return std_msgs_mcp.String(
+                data=json.dumps({"error": f"invalid JSON: {e}"})
+            )
+        half = payload.get("half_window_m", 3.0)
+        try:
+            half = float(half)
+        except (TypeError, ValueError):
+            half = 3.0
+        snap = nav.snapshot_spatial_context(half_window_m=half)
+        return std_msgs_mcp.String(data=json.dumps(snap))
+
     # Tool metadata for Atlas DeclareInterface (one entry per provided contract).
     declared = [
         {
@@ -216,6 +255,17 @@ def build_mcp_app(nav) -> tuple[FastMCP, list[dict]]:
             "tool_name": "cancel_navigation",
             "description": "Cancel an in-flight navigation goal (zero-twist immediately).",
             "input_schema": CANCEL_SCHEMA,
+        },
+        {
+            "contract_id": "robonix/srv/perception/spatial_context",
+            "iface_name": "spatial_context",
+            "tool_name": "get_spatial_context",
+            "description": (
+                "Look around: return current pose, a local occupancy crop, and "
+                "nearest-obstacle distances in 8 directions. Call this before "
+                "navigate() so the VLM can choose a reachable goal."
+            ),
+            "input_schema": SPATIAL_SCHEMA,
         },
     ]
     return mcp, declared
